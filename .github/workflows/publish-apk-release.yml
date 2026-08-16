@@ -1,0 +1,36 @@
+name: Publish APK Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download latest APK
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: build-apk.yml
+          workflow_conclusion: success
+          name: Mawzafeen-Aljanoubia-APK
+          path: release
+          if_no_artifact_found: fail
+
+      - name: Rename APK
+        run: |
+          cp release/Mawzafeen-Aljanoubia.apk Janoubia-Sales-2.apk
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: janoubia-latest
+          name: "مبيعات جنوبية 2 - آخر إصدار"
+          files: Janoubia-Sales-2.apk
+          make_latest: true
+          overwrite_files: true
