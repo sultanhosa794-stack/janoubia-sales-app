@@ -21,14 +21,31 @@ jobs:
         run: |
           rm -rf appsrc
           mkdir appsrc
-          unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip -d appsrc
+          unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip.zip -d appsrc
 
-      - name: Fix MainActivity for biometric
+      - name: Fix MainActivity and WebView
         run: |
           FILE="appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+
           sed -i 's/public class MainActivity extends Activity/public class MainActivity extends FragmentActivity/' "$FILE"
           sed -i 's/public class MainActivity extends AppCompatActivity/public class MainActivity extends FragmentActivity/' "$FILE"
-          grep -q "androidx.fragment.app.FragmentActivity" "$FILE" || sed -i '/^package /a import androidx.fragment.app.FragmentActivity;' "$FILE"
+
+          grep -q "androidx.fragment.app.FragmentActivity" "$FILE" || \
+          sed -i '/^package /a import androidx.fragment.app.FragmentActivity;' "$FILE"
+
+          # Force JavaScript + DOM storage ON in Android WebView
+          sed -i '/setJavaScriptEnabled/d' "$FILE"
+          sed -i '/setDomStorageEnabled/d' "$FILE"
+
+          sed -i '/setContentView/a\
+          android.webkit.WebView webView = findViewById(R.id.webview);\
+          webView.getSettings().setJavaScriptEnabled(true);\
+          webView.getSettings().setDomStorageEnabled(true);\
+          webView.getSettings().setDatabaseEnabled(true);\
+          webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);' "$FILE"
+
+          echo "===== WebView settings ====="
+          grep -n "JavaScriptEnabled\\|DomStorageEnabled\\|DatabaseEnabled" "$FILE" || true
 
       - name: Setup Java
         uses: actions/setup-java@v4
