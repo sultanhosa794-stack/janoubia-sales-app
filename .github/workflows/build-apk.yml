@@ -23,6 +23,13 @@ jobs:
           mkdir appsrc
           unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip -d appsrc
 
+      - name: Fix MainActivity for biometric
+        run: |
+          FILE="appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+          sed -i 's/public class MainActivity extends Activity/public class MainActivity extends FragmentActivity/' "$FILE"
+          sed -i 's/public class MainActivity extends AppCompatActivity/public class MainActivity extends FragmentActivity/' "$FILE"
+          grep -q "androidx.fragment.app.FragmentActivity" "$FILE" || sed -i '/^package /a import androidx.fragment.app.FragmentActivity;' "$FILE"
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -36,11 +43,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+
       - name: Enable AndroidX
         working-directory: appsrc
         run: |
           echo "android.useAndroidX=true" > gradle.properties
           echo "android.enableJetifier=true" >> gradle.properties
+
       - name: Restore signing key
         run: |
           echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
