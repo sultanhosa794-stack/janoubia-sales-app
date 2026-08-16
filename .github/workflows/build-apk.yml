@@ -23,9 +23,61 @@ jobs:
           mkdir appsrc
           unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip.zip -d appsrc
 
+      - name: Fix WebView ID in layout
+        run: |
+          python3 <<'PY'
+          import os
+          import re
+
+          layout_dir = "appsrc/app/src/main/res/layout"
+
+          found = False
+
+          for root, dirs, files in os.walk(layout_dir):
+              for filename in files:
+                  if not filename.endswith(".xml"):
+                      continue
+
+                  path = os.path.join(root, filename)
+
+                  with open(path, "r", encoding="utf-8") as f:
+                      text = f.read()
+
+                  if '@+id/webview' in text or '@id/webview' in text:
+                      print("WebView ID already exists in:", path)
+                      found = True
+                      break
+
+                  pattern = r'(<(?:android\.webkit\.)?WebView\b)'
+
+                  if re.search(pattern, text):
+                      text = re.sub(
+                          pattern,
+                          r'\1\n        android:id="@+id/webview"',
+                          text,
+                          count=1
+                      )
+
+                      with open(path, "w", encoding="utf-8") as f:
+                          f.write(text)
+
+                      print("Added webview ID to:", path)
+                      found = True
+                      break
+
+              if found:
+                  break
+
+          if not found:
+              raise SystemExit("ERROR: No WebView found in layout files")
+          PY
+
       - name: Fix MainActivity and WebView
         run: |
           FILE="appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+
+          echo "===== MainActivity before modification ====="
+          head -n 30 "$FILE"
 
           sed -i 's/public class MainActivity extends Activity/public class MainActivity extends FragmentActivity/' "$FILE"
           sed -i 's/public class MainActivity extends AppCompatActivity/public class MainActivity extends FragmentActivity/' "$FILE"
@@ -33,19 +85,23 @@ jobs:
           grep -q "androidx.fragment.app.FragmentActivity" "$FILE" || \
           sed -i '/^package /a import androidx.fragment.app.FragmentActivity;' "$FILE"
 
-          # Force JavaScript + DOM storage ON in Android WebView
-          sed -i '/setJavaScriptEnabled/d' "$FILE"
-          sed -i '/setDomStorageEnabled/d' "$FILE"
+          # Remove old injected WebView settings if workflow runs again
+          sed -i '/android\.webkit\.WebView webView = findViewById(R\.id\.webview);/d' "$FILE"
+          sed -i '/webView\.getSettings().setJavaScriptEnabled/d' "$FILE"
+          sed -i '/webView\.getSettings().setDomStorageEnabled/d' "$FILE"
+          sed -i '/webView\.getSettings().setDatabaseEnabled/d' "$FILE"
+          sed -i '/webView\.getSettings().setJavaScriptCanOpenWindowsAutomatically/d' "$FILE"
 
+          # Add WebView settings immediately after setContentView
           sed -i '/setContentView/a\
-          android.webkit.WebView webView = findViewById(R.id.webview);\
-          webView.getSettings().setJavaScriptEnabled(true);\
-          webView.getSettings().setDomStorageEnabled(true);\
-          webView.getSettings().setDatabaseEnabled(true);\
-          webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);' "$FILE"
+              android.webkit.WebView webView = findViewById(R.id.webview);\
+              webView.getSettings().setJavaScriptEnabled(true);\
+              webView.getSettings().setDomStorageEnabled(true);\
+              webView.getSettings().setDatabaseEnabled(true);\
+              webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);' "$FILE"
 
-          echo "===== WebView settings ====="
-          grep -n "JavaScriptEnabled\\|DomStorageEnabled\\|DatabaseEnabled" "$FILE" || true
+          echo "===== WebView settings after modification ====="
+          grep -n "webview\\|JavaScriptEnabled\\|DomStorageEnabled\\|DatabaseEnabled" "$FILE" || true
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -70,6 +126,7 @@ jobs:
       - name: Restore signing key
         run: |
           echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
+
           echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" >> "$GITHUB_ENV"
           echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" >> "$GITHUB_ENV"
           echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
@@ -80,7 +137,8 @@ jobs:
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Prepare APK
-        run: cp appsrc/app/build/outputs/apk/release/app-release.apk Mawzafeen-Aljanoubia.apk
+        run: |
+          cp appsrc/app/build/outputs/apk/release/app-release.apk Mawzafeen-Aljanoubia.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
