@@ -1,10 +1,13 @@
-name: Build Android APK
+name: Build Signed Android APK
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -14,11 +17,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Extract latest project
         run: |
           rm -rf appsrc
           mkdir appsrc
-          unzip -o janoubia-sales-app.zip -d appsrc
+          unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip -d appsrc
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -34,16 +37,24 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Build APK
+      - name: Restore signing key
+        run: |
+          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
+          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
         working-directory: appsrc
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:assembleRelease --stacktrace
 
       - name: Prepare APK
-        run: cp appsrc/app/build/outputs/apk/debug/app-debug.apk Janoubia-Sales.apk
+        run: cp appsrc/app/build/outputs/apk/release/app-release.apk Mawzafeen-Aljanoubia.apk
 
-      - name: Upload APK
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: Janoubia-Sales-APK
-          path: Janoubia-Sales.apk
+          name: Mawzafeen-Aljanoubia-APK
+          path: Mawzafeen-Aljanoubia.apk
           if-no-files-found: error
