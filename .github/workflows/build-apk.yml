@@ -20,40 +20,319 @@ jobs:
       - name: Extract latest project
         run: |
           rm -rf appsrc
-          mkdir appsrc
+          mkdir -p appsrc
           unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip.zip -d appsrc
 
-      - name: Fix MainActivity WebView
+          echo "===== PROJECT FILES ====="
+          find appsrc -maxdepth 8 -type f | sort
+
+      - name: Fix Android login and WebView
         run: |
-          FILE="appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+          python3 <<'PY'
+          from pathlib import Path
+          import re
 
-          sed -i 's/public class MainActivity extends Activity/public class MainActivity extends FragmentActivity/' "$FILE"
-          sed -i 's/public class MainActivity extends AppCompatActivity/public class MainActivity extends FragmentActivity/' "$FILE"
+          file = Path(
+              "appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+          )
 
-          grep -q "androidx.fragment.app.FragmentActivity" "$FILE" || \
-          sed -i '/^package /a import androidx.fragment.app.FragmentActivity;' "$FILE"
+          if not file.exists():
+              raise SystemExit(f"MainActivity not found: {file}")
 
-          # Remove any previously injected broken WebView code
-          sed -i '/android\.webkit\.WebView webView = findViewById(R\.id\.webview);/d' "$FILE"
-          sed -i '/android\.webkit\.WebView webView = new android\.webkit\.WebView(this);/d' "$FILE"
-          sed -i '/webView\.getSettings().setJavaScriptEnabled/d' "$FILE"
-          sed -i '/webView\.getSettings().setDomStorageEnabled/d' "$FILE"
-          sed -i '/webView\.getSettings().setDatabaseEnabled/d' "$FILE"
-          sed -i '/webView\.getSettings().setJavaScriptCanOpenWindowsAutomatically/d' "$FILE"
+          text = file.read_text(encoding="utf-8")
 
-          # Create WebView directly in Java, without R.id.webview
-          sed -i '/setContentView/a\
-              android.webkit.WebView webView = new android.webkit.WebView(this);\
-              webView.getSettings().setJavaScriptEnabled(true);\
-              webView.getSettings().setDomStorageEnabled(true);\
-              webView.getSettings().setDatabaseEnabled(true);\
-              webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);' "$FILE"
+          print("===== ORIGINAL MAINACTIVITY =====")
+          print(text)
 
-          echo "===== Modified MainActivity ====="
-          grep -n "WebView\\|JavaScriptEnabled\\|DomStorageEnabled\\|DatabaseEnabled" "$FILE" || true
+          # ---------------------------------------------------------
+          # 1. Remove the broken WebView code injected by old workflows.
+          #    The application already has its own real WebView field.
+          # ---------------------------------------------------------
+
+          patterns = [
+              r'^\s*android\.webkit\.WebView webView\s*=\s*findViewById\(R\.id\.webview\);\s*$',
+              r'^\s*android\.webkit\.WebView webView\s*=\s*new android\.webkit\.WebView\(this\);\s*$',
+              r'^\s*webView\.getSettings\(\)\.setJavaScriptEnabled\(true\);\s*$',
+              r'^\s*webView\.getSettings\(\)\.setDomStorageEnabled\(true\);\s*$',
+              r'^\s*webView\.getSettings\(\)\.setDatabaseEnabled\(true\);\s*$',
+              r'^\s*webView\.getSettings\(\)\.setJavaScriptCanOpenWindowsAutomatically\(true\);\s*$',
+          ]
+
+          for pattern in patterns:
+              text = re.sub(
+                  pattern,
+                  "",
+                  text,
+                  flags=re.MULTILINE
+              )
+
+          # ---------------------------------------------------------
+          # 2. Make sure the required Android imports exist.
+          # ---------------------------------------------------------
+
+          imports = [
+              "import android.webkit.CookieManager;",
+              "import android.webkit.WebSettings;",
+              "import android.webkit.WebView;",
+              "import android.webkit.WebViewClient;",
+              "import android.os.Build;",
+          ]
+
+          package_match = re.search(
+              r'^package\s+[^;]+;\s*',
+              text,
+              flags=re.MULTILINE
+          )
+
+          if not package_match:
+              raise SystemExit("ERROR: package declaration not found")
+
+          insertion = ""
+
+          for imp in imports:
+              if imp not in text:
+                  insertion += "\n" + imp
+
+          if insertion:
+              end = package_match.end()
+              text = text[:end] + insertion + "\n" + text[end:]
+
+          # ---------------------------------------------------------
+          # 3. Find the REAL WebView already used by the application.
+          # ---------------------------------------------------------
+
+          if not re.search(
+              r'\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView\s*\(\s*this\s*\)\s*;',
+              text
+          ):
+              raise SystemExit(
+                  "ERROR: The real application WebView could not be found."
+              )
+
+          # ---------------------------------------------------------
+          # 4. Remove our login-fix block if this workflow is rerun.
+          #    This prevents duplicate code.
+          # ---------------------------------------------------------
+
+          text = re.sub(
+              r'\s*// JAN_LOGIN_FIX_START.*?// JAN_LOGIN_FIX_END\s*',
+              "\n",
+              text,
+              flags=re.DOTALL
+          )
+
+          login_fix = r'''
+                  // JAN_LOGIN_FIX_START
+
+                  WebSettings janLoginSettings = webView.getSettings();
+
+                  // JavaScript is required by the web application.
+                  janLoginSettings.setJavaScriptEnabled(true);
+
+                  // Required for localStorage/sessionStorage.
+                  janLoginSettings.setDomStorageEnabled(true);
+
+                  // Keep WebView database storage available.
+                  janLoginSettings.setDatabaseEnabled(true);
+
+                  // Allow login flows that use JavaScript redirects/windows.
+                  janLoginSettings.setJavaScriptCanOpenWindowsAutomatically(true);
+                  janLoginSettings.setSupportMultipleWindows(false);
+
+                  // Normal responsive web application settings.
+                  janLoginSettings.setLoadWithOverviewMode(true);
+                  janLoginSettings.setUseWideViewPort(true);
+
+                  // Do not force the browser to work from stale cache.
+                  janLoginSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+                  // Some login/API flows contain redirects or resources that
+                  // Android WebView otherwise blocks.
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      janLoginSettings.setMixedContentMode(
+                          WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                      );
+                  }
+
+                  // Login/session cookies.
+                  CookieManager janCookieManager = CookieManager.getInstance();
+                  janCookieManager.setAcceptCookie(true);
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      janCookieManager.setAcceptThirdPartyCookies(
+                          webView,
+                          true
+                      );
+                  }
+
+                  janCookieManager.flush();
+
+                  // JAN_LOGIN_FIX_END
+          '''
+
+          # Put the fix directly after creation of the actual WebView.
+          text, count = re.subn(
+              r'(\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView\s*\(\s*this\s*\)\s*;)',
+              lambda m: m.group(1) + "\n" + login_fix,
+              text,
+              count=1
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: Could not inject login settings into real WebView."
+              )
+
+          # ---------------------------------------------------------
+          # 5. Ensure cookies are persisted after page loads.
+          # ---------------------------------------------------------
+
+          page_finished_pattern = (
+              r'(public\s+void\s+onPageFinished\s*'
+              r'\(\s*WebView\s+\w+\s*,\s*String\s+\w+\s*\)\s*\{)'
+          )
+
+          if re.search(page_finished_pattern, text):
+              text = re.sub(
+                  page_finished_pattern,
+                  lambda m: (
+                      m.group(1)
+                      + '\n'
+                      + '                CookieManager.getInstance().flush();'
+                  ),
+                  text,
+                  count=1
+              )
+
+          # ---------------------------------------------------------
+          # 6. Clean accidental excessive blank lines.
+          # ---------------------------------------------------------
+
+          text = re.sub(r'\n{4,}', '\n\n\n', text)
+
+          file.write_text(text, encoding="utf-8")
+
+          print("===== FIXED MAINACTIVITY =====")
+          print(text)
+
+          # ---------------------------------------------------------
+          # 7. Sanity checks.
+          # ---------------------------------------------------------
+
+          checks = {
+              "JavaScript":
+                  "setJavaScriptEnabled(true)" in text,
+
+              "DOM storage":
+                  "setDomStorageEnabled(true)" in text,
+
+              "Database":
+                  "setDatabaseEnabled(true)" in text,
+
+              "Cookies":
+                  "setAcceptCookie(true)" in text,
+
+              "Third-party cookies":
+                  "setAcceptThirdPartyCookies" in text,
+
+              "Real WebView":
+                  bool(re.search(
+                      r'\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView',
+                      text
+                  )),
+
+              "No fake R.id.webview":
+                  "R.id.webview" not in text,
+          }
+
+          print("===== LOGIN CHECKS =====")
+
+          failed = []
+
+          for name, ok in checks.items():
+              print(f"{name}: {'OK' if ok else 'FAILED'}")
+              if not ok:
+                  failed.append(name)
+
+          if failed:
+              raise SystemExit(
+                  "LOGIN CONFIGURATION CHECK FAILED: "
+                  + ", ".join(failed)
+              )
+
+          print("All WebView login checks passed.")
+          PY
+
+      - name: Fix Android Manifest
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          manifest = Path(
+              "appsrc/app/src/main/AndroidManifest.xml"
+          )
+
+          if not manifest.exists():
+              raise SystemExit("AndroidManifest.xml not found")
+
+          text = manifest.read_text(encoding="utf-8")
+
+          # Make sure INTERNET permission exists.
+          if 'android.permission.INTERNET' not in text:
+              text = text.replace(
+                  "<manifest",
+                  "<manifest",
+                  1
+              )
+
+              pos = text.find(">")
+
+              text = (
+                  text[:pos + 1]
+                  + '\n    <uses-permission '
+                    'android:name="android.permission.INTERNET"/>'
+                  + text[pos + 1:]
+              )
+
+          # Allow network compatibility required by embedded web apps.
+          if "android:usesCleartextTraffic=" not in text:
+              text = re.sub(
+                  r'<application\b',
+                  '<application android:usesCleartextTraffic="true"',
+                  text,
+                  count=1
+              )
+
+          manifest.write_text(text, encoding="utf-8")
+
+          print("===== ANDROID MANIFEST =====")
+          print(text)
+
+          if 'android.permission.INTERNET' not in text:
+              raise SystemExit(
+                  "ERROR: INTERNET permission is missing"
+              )
+
+          print("Manifest checks passed.")
+          PY
+
+      - name: Check Gradle project
+        run: |
+          test -f appsrc/build.gradle
+          test -f appsrc/settings.gradle
+          test -f appsrc/app/build.gradle
+          test -f appsrc/app/src/main/AndroidManifest.xml
+          test -f appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java
+
+          echo "===== APP BUILD.GRADLE ====="
+          cat appsrc/app/build.gradle
+
+          echo "===== SETTINGS.GRADLE ====="
+          cat appsrc/settings.gradle
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -74,18 +353,48 @@ jobs:
 
       - name: Restore signing key
         run: |
-          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
-          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" >> "$GITHUB_ENV"
-          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
-          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" \
+            | base64 -d \
+            > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
+
+          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" \
+            >> "$GITHUB_ENV"
+
+          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" \
+            >> "$GITHUB_ENV"
+
+          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" \
+            >> "$GITHUB_ENV"
+
+          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" \
+            >> "$GITHUB_ENV"
+
+      - name: Compile Java first
+        working-directory: appsrc
+        run: |
+          gradle :app:compileReleaseJavaWithJavac --stacktrace
 
       - name: Build signed release APK
         working-directory: appsrc
-        run: gradle :app:assembleRelease --stacktrace
+        run: |
+          gradle :app:assembleRelease --stacktrace
+
+      - name: Verify APK exists
+        run: |
+          APK="appsrc/app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: Signed APK was not generated"
+            exit 1
+          fi
+
+          ls -lh "$APK"
 
       - name: Prepare APK
-        run: cp appsrc/app/build/outputs/apk/release/app-release.apk Mawzafeen-Aljanoubia.apk
+        run: |
+          cp \
+            appsrc/app/build/outputs/apk/release/app-release.apk \
+            Mawzafeen-Aljanoubia.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
