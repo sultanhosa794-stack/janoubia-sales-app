@@ -23,51 +23,40 @@ jobs:
           mkdir -p appsrc
           unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip.zip -d appsrc
 
+          echo "===== PROJECT FILES ====="
+          find appsrc -maxdepth 4 -type f | head -100
+
       - name: Fix MainActivity and login support
         run: |
           python3 <<'PY'
           from pathlib import Path
           import re
 
-          file = Path("appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java")
+          file = Path(
+              "appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+          )
 
           if not file.exists():
-              raise SystemExit("MainActivity.java not found")
+              raise SystemExit(
+                  "ERROR: MainActivity.java not found at expected path"
+              )
 
           text = file.read_text(encoding="utf-8")
 
-          # Fix Activity type for BiometricPrompt
+          print("===== ORIGINAL MAINACTIVITY =====")
+          print(text[:4000])
+
+          # --------------------------------------------------
+          # 1. Make MainActivity compatible with FragmentActivity
+          # --------------------------------------------------
+
           text = re.sub(
-              r'public\s+class\s+MainActivity\s+extends\s+(?:Activity|AppCompatActivity|FragmentActivity)',
+              r'public\s+class\s+MainActivity\s+extends\s+'
+              r'(?:Activity|AppCompatActivity|FragmentActivity)',
               'public class MainActivity extends FragmentActivity',
               text,
               count=1
           )
-
-          if "import androidx.fragment.app.FragmentActivity;" not in text:
-              package_match = re.search(
-                  r'^package\s+[^;]+;\s*',
-                  text,
-                  flags=re.MULTILINE
-              )
-
-              if not package_match:
-                  raise SystemExit("Package declaration not found")
-
-              pos = package_match.end()
-              text = (
-                  text[:pos]
-                  + "\nimport androidx.fragment.app.FragmentActivity;\n"
-                  + text[pos:]
-              )
-
-          required_imports = [
-              "import android.os.Build;",
-              "import android.webkit.CookieManager;",
-              "import android.webkit.WebSettings;",
-              "import android.webkit.WebView;",
-              "import android.webkit.WebViewClient;",
-          ]
 
           package_match = re.search(
               r'^package\s+[^;]+;\s*',
@@ -76,112 +65,170 @@ jobs:
           )
 
           if not package_match:
-              raise SystemExit("Package declaration missing")
+              raise SystemExit("ERROR: package declaration not found")
 
-          additions = ""
+          required_imports = [
+              "import androidx.fragment.app.FragmentActivity;",
+              "import android.os.Build;",
+              "import android.webkit.CookieManager;",
+              "import android.webkit.WebSettings;",
+              "import android.webkit.WebView;",
+              "import android.webkit.WebViewClient;",
+          ]
+
+          missing_imports = []
 
           for imp in required_imports:
               if imp not in text:
-                  additions += "\n" + imp
+                  missing_imports.append(imp)
 
-          if additions:
+          if missing_imports:
               pos = package_match.end()
-              text = text[:pos] + additions + "\n" + text[pos:]
+              block = "\n" + "\n".join(missing_imports) + "\n"
+              text = text[:pos] + block + text[pos:]
 
-          # Remove only broken code from previous attempts
+          # --------------------------------------------------
+          # 2. Remove broken code from previous attempts
+          # --------------------------------------------------
+
           text = re.sub(
-              r'^\s*android\.webkit\.WebView webView\s*=\s*findViewById\(R\.id\.webview\);\s*$',
+              r'^\s*(?:android\.webkit\.)?WebView\s+webView\s*='
+              r'\s*findViewById\(R\.id\.webview\);\s*$',
               '',
               text,
               flags=re.MULTILINE
           )
 
           text = re.sub(
-              r'^\s*android\.webkit\.WebView webView\s*=\s*new android\.webkit\.WebView\(this\);\s*$',
-              '',
-              text,
-              flags=re.MULTILINE
-          )
-
-          # Remove our own previous login block if rerun
-          text = re.sub(
-              r'\s*// JAN_LOGIN_FIX_START.*?// JAN_LOGIN_FIX_END\s*',
+              r'\s*// JAN_LOGIN_FIX_START.*?'
+              r'// JAN_LOGIN_FIX_END\s*',
               '\n',
               text,
               flags=re.DOTALL
           )
 
-          # Verify the app's real WebView exists
+          # --------------------------------------------------
+          # 3. Find the REAL programmatically-created WebView
+          # --------------------------------------------------
+
+          real_webview_pattern = (
+              r'\bwebView\s*=\s*new\s+'
+              r'(?:android\.webkit\.)?WebView\s*'
+              r'\(\s*this\s*\)\s*;'
+          )
+
           real_webview = re.search(
-              r'\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView\s*\(\s*this\s*\)\s*;',
+              real_webview_pattern,
               text
           )
 
           if not real_webview:
-              raise SystemExit("Real application WebView not found")
+              raise SystemExit(
+                  "ERROR: Real WebView creation not found in MainActivity"
+              )
+
+          # --------------------------------------------------
+          # 4. Add WebView settings needed by login/session
+          # --------------------------------------------------
 
           login_fix = r'''
-                  // JAN_LOGIN_FIX_START
 
-                  WebSettings janLoginSettings = webView.getSettings();
+              // JAN_LOGIN_FIX_START
 
-                  janLoginSettings.setJavaScriptEnabled(true);
-                  janLoginSettings.setDomStorageEnabled(true);
-                  janLoginSettings.setDatabaseEnabled(true);
-                  janLoginSettings.setJavaScriptCanOpenWindowsAutomatically(true);
-                  janLoginSettings.setSupportMultipleWindows(false);
-                  janLoginSettings.setLoadWithOverviewMode(true);
-                  janLoginSettings.setUseWideViewPort(true);
-                  janLoginSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+              WebSettings janSettings = webView.getSettings();
 
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                      janLoginSettings.setMixedContentMode(
-                          WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                      );
-                  }
+              janSettings.setJavaScriptEnabled(true);
+              janSettings.setDomStorageEnabled(true);
+              janSettings.setDatabaseEnabled(true);
 
-                  CookieManager janCookieManager = CookieManager.getInstance();
-                  janCookieManager.setAcceptCookie(true);
+              janSettings.setJavaScriptCanOpenWindowsAutomatically(true);
+              janSettings.setSupportMultipleWindows(false);
 
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                      janCookieManager.setAcceptThirdPartyCookies(
-                          webView,
-                          true
-                      );
-                  }
+              janSettings.setLoadWithOverviewMode(true);
+              janSettings.setUseWideViewPort(true);
 
-                  janCookieManager.flush();
+              janSettings.setCacheMode(
+                  WebSettings.LOAD_DEFAULT
+              );
 
-                  // JAN_LOGIN_FIX_END
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                  janSettings.setMixedContentMode(
+                      WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                  );
+              }
+
+              CookieManager janCookies =
+                  CookieManager.getInstance();
+
+              janCookies.setAcceptCookie(true);
+
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                  janCookies.setAcceptThirdPartyCookies(
+                      webView,
+                      true
+                  );
+              }
+
+              janCookies.flush();
+
+              // JAN_LOGIN_FIX_END
           '''
 
           text, count = re.subn(
-              r'(\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView\s*\(\s*this\s*\)\s*;)',
-              lambda m: m.group(1) + "\n" + login_fix,
+              '(' + real_webview_pattern + ')',
+              lambda m: m.group(1) + login_fix,
               text,
               count=1
           )
 
           if count != 1:
-              raise SystemExit("Could not inject login fix")
-
-          # Flush cookies when page finishes
-          if "CookieManager.getInstance().flush();" not in text[
-              text.find("onPageFinished") if "onPageFinished" in text else 0:
-          ]:
-              text = re.sub(
-                  r'(public\s+void\s+onPageFinished\s*\(\s*WebView\s+\w+\s*,\s*String\s+\w+\s*\)\s*\{)',
-                  r'\1\n                CookieManager.getInstance().flush();',
-                  text,
-                  count=1
+              raise SystemExit(
+                  "ERROR: Could not inject WebView login settings"
               )
 
-          # Keep formatting clean
-          text = re.sub(r'\n{4,}', '\n\n\n', text)
+          # --------------------------------------------------
+          # 5. Make sure cookies persist after pages load
+          # --------------------------------------------------
 
-          file.write_text(text, encoding="utf-8")
+          if "onPageFinished" in text:
+              page_finished_pattern = (
+                  r'(public\s+void\s+onPageFinished\s*'
+                  r'\(\s*WebView\s+\w+\s*,\s*'
+                  r'String\s+\w+\s*\)\s*\{)'
+              )
 
-          print("===== VERIFY MAINACTIVITY =====")
+              if not re.search(
+                  r'onPageFinished[\s\S]{0,500}'
+                  r'CookieManager\.getInstance\(\)\.flush',
+                  text
+              ):
+                  text = re.sub(
+                      page_finished_pattern,
+                      r'\1\n'
+                      r'                '
+                      r'CookieManager.getInstance().flush();',
+                      text,
+                      count=1
+                  )
+
+          # --------------------------------------------------
+          # 6. Save repaired MainActivity
+          # --------------------------------------------------
+
+          text = re.sub(
+              r'\n{4,}',
+              '\n\n\n',
+              text
+          )
+
+          file.write_text(
+              text,
+              encoding="utf-8"
+          )
+
+          # --------------------------------------------------
+          # 7. Validate critical login requirements
+          # --------------------------------------------------
 
           checks = {
               "FragmentActivity":
@@ -190,45 +237,53 @@ jobs:
               "FragmentActivity import":
                   "import androidx.fragment.app.FragmentActivity;" in text,
 
-              "JavaScript":
+              "JavaScript enabled":
                   "setJavaScriptEnabled(true)" in text,
 
-              "DOM storage":
+              "DOM storage enabled":
                   "setDomStorageEnabled(true)" in text,
 
-              "Database":
+              "Database enabled":
                   "setDatabaseEnabled(true)" in text,
 
-              "Cookies":
+              "Cookies enabled":
                   "setAcceptCookie(true)" in text,
 
-              "Third-party cookies":
+              "Third party cookies":
                   "setAcceptThirdPartyCookies" in text,
 
               "Real WebView":
-                  bool(re.search(
-                      r'\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView',
-                      text
-                  )),
+                  bool(
+                      re.search(
+                          real_webview_pattern,
+                          text
+                      )
+                  ),
 
               "No broken R.id.webview":
                   "R.id.webview" not in text,
           }
 
+          print("===== LOGIN VALIDATION =====")
+
           failed = []
 
           for name, ok in checks.items():
-              print(name, "OK" if ok else "FAILED")
+              print(
+                  name + ":",
+                  "OK" if ok else "FAILED"
+              )
 
               if not ok:
                   failed.append(name)
 
           if failed:
               raise SystemExit(
-                  "Validation failed: " + ", ".join(failed)
+                  "ERROR: Validation failed: "
+                  + ", ".join(failed)
               )
 
-          print("MainActivity validation passed.")
+          print("===== MAINACTIVITY FIX COMPLETE =====")
           PY
 
       - name: Verify Android Manifest
@@ -236,17 +291,25 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
 
-          manifest = Path("appsrc/app/src/main/AndroidManifest.xml")
+          manifest = Path(
+              "appsrc/app/src/main/AndroidManifest.xml"
+          )
 
           if not manifest.exists():
-              raise SystemExit("AndroidManifest.xml not found")
+              raise SystemExit(
+                  "ERROR: AndroidManifest.xml not found"
+              )
 
-          text = manifest.read_text(encoding="utf-8")
+          text = manifest.read_text(
+              encoding="utf-8"
+          )
 
           if "android.permission.INTERNET" not in text:
-              raise SystemExit("INTERNET permission missing")
+              raise SystemExit(
+                  "ERROR: INTERNET permission missing"
+              )
 
-          print("AndroidManifest OK")
+          print("AndroidManifest INTERNET permission: OK")
           PY
 
       - name: Setup Java
@@ -271,14 +334,23 @@ jobs:
 
       - name: Restore signing key
         run: |
-          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
+          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" \
+          | base64 -d \
+          > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
 
-          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" >> "$GITHUB_ENV"
-          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
-          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" \
+          >> "$GITHUB_ENV"
 
-      - name: Compile Java
+          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" \
+          >> "$GITHUB_ENV"
+
+          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" \
+          >> "$GITHUB_ENV"
+
+          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" \
+          >> "$GITHUB_ENV"
+
+      - name: Compile Java first
         working-directory: appsrc
         run: |
           gradle :app:compileReleaseJavaWithJavac --stacktrace
@@ -292,13 +364,19 @@ jobs:
         run: |
           APK="appsrc/app/build/outputs/apk/release/app-release.apk"
 
-          test -f "$APK"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated"
+            exit 1
+          fi
 
+          echo "===== APK GENERATED ====="
           ls -lh "$APK"
 
       - name: Prepare APK
         run: |
-          cp appsrc/app/build/outputs/apk/release/app-release.apk Mawzafeen-Aljanoubia.apk
+          cp \
+          appsrc/app/build/outputs/apk/release/app-release.apk \
+          Mawzafeen-Aljanoubia.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
