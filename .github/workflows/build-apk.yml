@@ -16,7 +16,9 @@ jobs:
 
       - name: Extract project
         run: |
-          unzip -o janoubia-sales-app.zip -d app
+          rm -rf appsrc
+          mkdir appsrc
+          unzip -o janoubia-sales-app.zip -d appsrc
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -24,17 +26,24 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
 
       - name: Build APK
-        working-directory: app
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+        working-directory: appsrc
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Prepare APK
+        run: cp appsrc/app/build/outputs/apk/debug/app-debug.apk Janoubia-Sales.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Janoubia-Sales-APK
-          path: app/**/build/outputs/apk/debug/*.apk
+          path: Janoubia-Sales.apk
+          if-no-files-found: error
