@@ -1,4 +1,4 @@
-# JANoubia FINAL V20 - robust updater + version badge + header hide
+# JANoubia FINAL V21 - unique updater files + native version badge + reliable header hide
 name: Build Final Janoubia APK
 
 on:
@@ -100,6 +100,7 @@ jobs:
               ("JAN_FINAL_METHODS_START", "JAN_FINAL_METHODS_END"),
               ("JAN_FINAL_CHECK_START", "JAN_FINAL_CHECK_END"),
               ("JAN_FINAL_RESUME_START", "JAN_FINAL_RESUME_END"),
+              ("JAN_NATIVE_VERSION_BADGE_START", "JAN_NATIVE_VERSION_BADGE_END"),
           ]:
               text = re.sub(
                   rf'\s*// {start}.*?// {end}\s*',
@@ -162,10 +163,50 @@ jobs:
           ):
               text = re.sub(
                   r'(public\s+void\s+onPageFinished\s*\(\s*WebView\s+\w+\s*,\s*String\s+\w+\s*\)\s*\{)',
-                  r'\1\n                CookieManager.getInstance().flush();',
+                  r'\1\n                CookieManager.getInstance().flush();\n                webView.postDelayed(() -> applyJanoubiaPageTweaks(), 700L);',
                   text,
                   count=1,
               )
+
+          version_badge_block = r'''
+              // JAN_NATIVE_VERSION_BADGE_START
+              try {
+                  android.widget.TextView janVersionBadge = new android.widget.TextView(this);
+                  janVersionBadge.setText("\u0627\u0644\u0625\u0635\u062f\u0627\u0631 __JAN_VERSION_BADGE__");
+                  janVersionBadge.setTextSize(10f);
+                  janVersionBadge.setTextColor(android.graphics.Color.rgb(108, 76, 255));
+                  janVersionBadge.setPadding(16, 7, 16, 7);
+
+                  android.graphics.drawable.GradientDrawable janBadgeBg =
+                          new android.graphics.drawable.GradientDrawable();
+                  janBadgeBg.setColor(android.graphics.Color.argb(235, 255, 255, 255));
+                  janBadgeBg.setCornerRadius(28f);
+                  janBadgeBg.setStroke(1, android.graphics.Color.argb(110, 108, 76, 255));
+                  janVersionBadge.setBackground(janBadgeBg);
+
+                  android.widget.FrameLayout.LayoutParams janBadgeParams =
+                          new android.widget.FrameLayout.LayoutParams(
+                                  android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                                  android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                          );
+                  janBadgeParams.gravity =
+                          android.view.Gravity.BOTTOM | android.view.Gravity.START;
+                  janBadgeParams.setMargins(14, 14, 14, 18);
+                  addContentView(janVersionBadge, janBadgeParams);
+              } catch (Throwable ignored) {}
+              // JAN_NATIVE_VERSION_BADGE_END
+          '''
+          version_badge_block = version_badge_block.replace(
+                  "__JAN_VERSION_BADGE__", str(build_number))
+
+          if 'setContentView(root);' in text:
+              text = text.replace(
+                  'setContentView(root);',
+                  'setContentView(root);\n' + version_badge_block,
+                  1,
+              )
+          else:
+              raise SystemExit("setContentView(root) not found for native version badge")
 
           # ------------------------------------------------------------
           # 3) Native in-app update system.
@@ -201,45 +242,8 @@ jobs:
               // JAN_FINAL_CHECK_START
               syncJanoubiaInstalledBuildMarker();
               webView.postDelayed(() -> checkJanoubiaUpdate(), 1800L);
-
-              // Add a small version badge and hide the white title bar after 5 seconds.
-              webView.postDelayed(() -> {
-                  try {
-                      String js =
-                              "(function(){"
-                              + "try{"
-                              + "var id='janoubia-version-badge';"
-                              + "if(!document.getElementById(id)){"
-                              + "var b=document.createElement('div');"
-                              + "b.id=id;"
-                              + "b.textContent='\\u0627\\u0644\\u0625\\u0635\\u062f\\u0627\\u0631 __JAN_VERSION_BADGE__';"
-                              + "b.style.cssText='position:fixed;left:10px;bottom:10px;z-index:2147483647;"
-                              + "font-size:10px;font-weight:700;color:#6c4cff;background:rgba(255,255,255,.92);"
-                              + "border:1px solid rgba(108,76,255,.35);padding:3px 7px;border-radius:10px;"
-                              + "box-shadow:0 1px 4px rgba(0,0,0,.08);direction:rtl;pointer-events:none';"
-                              + "document.body.appendChild(b);"
-                              + "}"
-                              + "var target='\\u0645\\u0648\\u0638\\u0641\\u064a\\u0646 \\u0627\\u0644\\u062c\\u0646\\u0648\\u0628\\u064a\\u0629';"
-                              + "var all=document.querySelectorAll('body *');"
-                              + "for(var i=0;i<all.length;i++){"
-                              + "var e=all[i];if(e.id===id)continue;"
-                              + "var full=(e.innerText||e.textContent||'').replace(/\\s+/g,' ').trim();"
-                              + "if(full.indexOf(target)===-1)continue;"
-                              + "var r=e.getBoundingClientRect();"
-                              + "if(r.top>=-20&&r.top<320&&r.height>=24&&r.height<=180&&r.width>=window.innerWidth*.55){"
-                              + "e.style.setProperty('display','none','important');"
-                              + "e.style.setProperty('height','0','important');"
-                              + "e.style.setProperty('min-height','0','important');"
-                              + "e.style.setProperty('margin','0','important');"
-                              + "e.style.setProperty('padding','0','important');"
-                              + "break;"
-                              + "}"
-                              + "}"
-                              + "}catch(x){}"
-                              + "})();";
-                      webView.evaluateJavascript(js, null);
-                  } catch (Throwable ignored) {}
-              }, 5000L);
+              webView.postDelayed(() -> applyJanoubiaPageTweaks(), 5000L);
+              webView.postDelayed(() -> applyJanoubiaPageTweaks(), 8000L);
               // JAN_FINAL_CHECK_END
           '''
           check_block = check_block.replace("__JAN_VERSION_BADGE__", str(build_number))
@@ -331,6 +335,34 @@ jobs:
                       } else if (JAN_LOCAL_BUILD > p.getInt("confirmed_build", 0)) {
                           p.edit().putInt("confirmed_build", JAN_LOCAL_BUILD).apply();
                       }
+                  } catch (Throwable ignored) {}
+              }
+
+              private void applyJanoubiaPageTweaks() {
+                  try {
+                      webView.evaluateJavascript(
+                              "(function(){try{"
+                              + "var target='\\u0645\\u0648\\u0638\\u0641\\u064a\\u0646 \\u0627\\u0644\\u062c\\u0646\\u0648\\u0628\\u064a\\u0629';"
+                              + "var all=document.querySelectorAll('body *');"
+                              + "for(var i=0;i<all.length;i++){"
+                              + "var e=all[i];"
+                              + "var text=(e.innerText||e.textContent||'').replace(/\\\\s+/g,' ').trim();"
+                              + "if(text.indexOf(target)===-1)continue;"
+                              + "var candidate=e;"
+                              + "for(var p=e,step=0;p&&p!==document.body&&step<5;p=p.parentElement,step++){"
+                              + "var r=p.getBoundingClientRect();"
+                              + "if(r.top>=-30&&r.top<360&&r.height>=20&&r.height<=200&&r.width>=window.innerWidth*.5){candidate=p;}"
+                              + "}"
+                              + "candidate.style.setProperty('display','none','important');"
+                              + "candidate.style.setProperty('height','0','important');"
+                              + "candidate.style.setProperty('min-height','0','important');"
+                              + "candidate.style.setProperty('margin','0','important');"
+                              + "candidate.style.setProperty('padding','0','important');"
+                              + "break;"
+                              + "}"
+                              + "}catch(e){}})();",
+                              null
+                      );
                   } catch (Throwable ignored) {}
               }
 
@@ -428,10 +460,32 @@ jobs:
                       request.setNotificationVisibility(
                               android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                       );
+                      String janUpdateFileName =
+                              "Janoubia-Sales-Update-v" + version + ".apk";
+
+                      try {
+                          java.io.File janDownloads =
+                                  getExternalFilesDir(
+                                          android.os.Environment.DIRECTORY_DOWNLOADS
+                                  );
+                          if (janDownloads != null) {
+                              java.io.File sameVersion =
+                                      new java.io.File(janDownloads, janUpdateFileName);
+                              if (sameVersion.exists()) sameVersion.delete();
+
+                              java.io.File legacyUpdater =
+                                      new java.io.File(
+                                              janDownloads,
+                                              "Janoubia-Sales-Update.apk"
+                                      );
+                              if (legacyUpdater.exists()) legacyUpdater.delete();
+                          }
+                      } catch (Throwable ignored) {}
+
                       request.setDestinationInExternalFilesDir(
                               this,
                               android.os.Environment.DIRECTORY_DOWNLOADS,
-                              "Janoubia-Sales-Update.apk"
+                              janUpdateFileName
                       );
                       janUpdateDownloadId = dm.enqueue(request);
 
@@ -447,7 +501,14 @@ jobs:
                               if (id != janUpdateDownloadId) return;
                               try {
                                   android.net.Uri uri = dm.getUriForDownloadedFile(id);
-                                  if (uri == null) return;
+                                  if (uri == null) {
+                                      android.widget.Toast.makeText(
+                                              MainActivity.this,
+                                              "\u062a\u0639\u0630\u0631 \u062a\u0646\u0632\u064a\u0644 \u0627\u0644\u062a\u062d\u062f\u064a\u062b. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.",
+                                              android.widget.Toast.LENGTH_LONG
+                                      ).show();
+                                      return;
+                                  }
                                   android.content.Intent install =
                                           new android.content.Intent(android.content.Intent.ACTION_VIEW);
                                   install.setDataAndType(uri, "application/vnd.android.package-archive");
@@ -531,8 +592,11 @@ jobs:
               "update checker present": "checkJanoubiaUpdate" in final,
               "robust local build present": "janPackageBuild" in final and "confirmed_build" in final,
               "five-second header hide present": "5000L" in final and "evaluateJavascript" in final,
-              "version badge present": "janoubia-version-badge" in final,
+              "native version badge present": "JAN_NATIVE_VERSION_BADGE_START" in final,
+              "unique updater filename present": "Janoubia-Sales-Update-v" in final,
+              "legacy updater cleanup present": "legacyUpdater" in final,
               "install success marker present": "pending_before_update_time" in final,
+              "page tweak helper present": "applyJanoubiaPageTweaks" in final,
               "update downloader present": "DownloadManager" in final,
               "update install permission": "REQUEST_INSTALL_PACKAGES" in manifest_final,
               "no broken R.id.webview": "R.id.webview" not in final,
