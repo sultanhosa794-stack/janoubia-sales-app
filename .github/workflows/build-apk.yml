@@ -1,4 +1,4 @@
-# JANoubia FINAL V21 - unique updater files + native version badge + reliable header hide
+# JANoubia FINAL V22 - guaranteed native version badge after app load
 name: Build Final Janoubia APK
 
 on:
@@ -172,16 +172,18 @@ jobs:
               // JAN_NATIVE_VERSION_BADGE_START
               try {
                   android.widget.TextView janVersionBadge = new android.widget.TextView(this);
-                  janVersionBadge.setText("\u0627\u0644\u0625\u0635\u062f\u0627\u0631 __JAN_VERSION_BADGE__");
-                  janVersionBadge.setTextSize(10f);
+                  janVersionBadge.setText("\u0627\u0644\u0625\u0635\u062f\u0627\u0631 " + JAN_LOCAL_BUILD);
+                  janVersionBadge.setTextSize(13f);
                   janVersionBadge.setTextColor(android.graphics.Color.rgb(108, 76, 255));
-                  janVersionBadge.setPadding(16, 7, 16, 7);
+                  janVersionBadge.setGravity(android.view.Gravity.CENTER);
+                  janVersionBadge.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+                  janVersionBadge.setPadding(20, 9, 20, 9);
 
                   android.graphics.drawable.GradientDrawable janBadgeBg =
                           new android.graphics.drawable.GradientDrawable();
-                  janBadgeBg.setColor(android.graphics.Color.argb(235, 255, 255, 255));
-                  janBadgeBg.setCornerRadius(28f);
-                  janBadgeBg.setStroke(1, android.graphics.Color.argb(110, 108, 76, 255));
+                  janBadgeBg.setColor(android.graphics.Color.argb(245, 255, 255, 255));
+                  janBadgeBg.setCornerRadius(30f);
+                  janBadgeBg.setStroke(2, android.graphics.Color.argb(180, 108, 76, 255));
                   janVersionBadge.setBackground(janBadgeBg);
 
                   android.widget.FrameLayout.LayoutParams janBadgeParams =
@@ -189,24 +191,34 @@ jobs:
                                   android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
                                   android.view.ViewGroup.LayoutParams.WRAP_CONTENT
                           );
-                  janBadgeParams.gravity =
-                          android.view.Gravity.BOTTOM | android.view.Gravity.START;
-                  janBadgeParams.setMargins(14, 14, 14, 18);
+                  janBadgeParams.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.START;
+                  janBadgeParams.setMargins(18, 18, 18, 28);
+
                   addContentView(janVersionBadge, janBadgeParams);
+                  janVersionBadge.setElevation(1000f);
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      janVersionBadge.setTranslationZ(1000f);
+                  }
+                  janVersionBadge.bringToFront();
+
+                  janVersionBadge.postDelayed(() -> {
+                      try {
+                          janVersionBadge.setVisibility(android.view.View.VISIBLE);
+                          janVersionBadge.bringToFront();
+                          janVersionBadge.setElevation(1000f);
+                      } catch (Throwable ignored) {}
+                  }, 1200L);
+
+                  janVersionBadge.postDelayed(() -> {
+                      try {
+                          janVersionBadge.setVisibility(android.view.View.VISIBLE);
+                          janVersionBadge.bringToFront();
+                          janVersionBadge.setElevation(1000f);
+                      } catch (Throwable ignored) {}
+                  }, 5000L);
               } catch (Throwable ignored) {}
               // JAN_NATIVE_VERSION_BADGE_END
           '''
-          version_badge_block = version_badge_block.replace(
-                  "__JAN_VERSION_BADGE__", str(build_number))
-
-          if 'setContentView(root);' in text:
-              text = text.replace(
-                  'setContentView(root);',
-                  'setContentView(root);\n' + version_badge_block,
-                  1,
-              )
-          else:
-              raise SystemExit("setContentView(root) not found for native version badge")
 
           # ------------------------------------------------------------
           # 3) Native in-app update system.
@@ -253,9 +265,13 @@ jobs:
           marker = re.search(r'\bloadAppHtml\s*\(\s*\)\s*;', text)
           if marker:
               end = marker.end()
-              text = text[:end] + "\n" + check_block + text[end:]
+              text = text[:end] + "\n" + version_badge_block + "\n" + check_block + text[end:]
           elif 'setContentView(root);' in text:
-              text = text.replace('setContentView(root);', 'setContentView(root);\n' + check_block, 1)
+              text = text.replace(
+                  'setContentView(root);',
+                  'setContentView(root);\n' + version_badge_block + '\n' + check_block,
+                  1,
+              )
           else:
               raise SystemExit("Safe insertion point for update check not found")
 
@@ -593,6 +609,7 @@ jobs:
               "robust local build present": "janPackageBuild" in final and "confirmed_build" in final,
               "five-second header hide present": "5000L" in final and "evaluateJavascript" in final,
               "native version badge present": "JAN_NATIVE_VERSION_BADGE_START" in final,
+              "version badge forced front": "bringToFront" in final and "setElevation(1000f)" in final,
               "unique updater filename present": "Janoubia-Sales-Update-v" in final,
               "legacy updater cleanup present": "legacyUpdater" in final,
               "install success marker present": "pending_before_update_time" in final,
