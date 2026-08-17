@@ -1,3 +1,4 @@
+# JANoubia FINAL V19 - updater loop fix + 5s header hide
 name: Build Final Janoubia APK
 
 on:
@@ -169,7 +170,7 @@ jobs:
           # ------------------------------------------------------------
           # 3) Native in-app update system.
           # The app checks the latest GitHub Release tag (vNN), compares it
-          # with BuildConfig.VERSION_CODE, downloads the APK internally, and
+          # with the build number baked into this APK, downloads it internally, and
           # launches Android's installer. Android still requires user approval.
           # ------------------------------------------------------------
           class_match = re.search(
@@ -184,16 +185,50 @@ jobs:
               // JAN_FINAL_FIELDS_START
               private static final String JAN_RELEASE_API =
                       "https://api.github.com/repos/sultanhosa794-stack/janoubia-sales-app/releases/latest";
+              private static final int JAN_LOCAL_BUILD = __JAN_LOCAL_BUILD__;
               private long janUpdateDownloadId = -1L;
               private String janPendingUpdateUrl = null;
               // JAN_FINAL_FIELDS_END
           '''
+          fields = fields.replace("__JAN_LOCAL_BUILD__", str(build_number))
           p = class_match.end()
           text = text[:p] + fields + text[p:]
 
           check_block = r'''
               // JAN_FINAL_CHECK_START
               webView.postDelayed(() -> checkJanoubiaUpdate(), 1800L);
+
+              // Hide the white bar whose visible text is "موظفين الجنوبية"
+              // after five seconds, without affecting the rest of the page.
+              webView.postDelayed(() -> {
+                  try {
+                      webView.evaluateJavascript(
+                              "(function(){"
+                              + "var target='\\u0645\\u0648\\u0638\\u0641\\u064a\\u0646 \\u0627\\u0644\\u062c\\u0646\\u0648\\u0628\\u064a\\u0629';"
+                              + "var all=document.querySelectorAll('body *');"
+                              + "for(var i=0;i<all.length;i++){"
+                              + "var e=all[i];"
+                              + "var txt=(e.innerText||e.textContent||'').trim();"
+                              + "if(txt===target){"
+                              + "var best=e,p=e.parentElement;"
+                              + "while(p&&p!==document.body){"
+                              + "var r=p.getBoundingClientRect();"
+                              + "if(r.height>0&&r.height<=160&&r.width>=window.innerWidth*0.70){best=p;}"
+                              + "p=p.parentElement;"
+                              + "}"
+                              + "best.style.display='none';"
+                              + "best.style.height='0';"
+                              + "best.style.minHeight='0';"
+                              + "best.style.margin='0';"
+                              + "best.style.padding='0';"
+                              + "break;"
+                              + "}"
+                              + "}"
+                              + "})();",
+                              null
+                      );
+                  } catch (Throwable ignored) {}
+              }, 5000L);
               // JAN_FINAL_CHECK_END
           '''
 
@@ -263,7 +298,7 @@ jobs:
                           if (!tag.find()) return;
 
                           int remoteVersion = Integer.parseInt(tag.group(1));
-                          if (remoteVersion <= getPackageManager().getPackageInfo(getPackageName(), 0).versionCode) return;
+                          if (remoteVersion <= JAN_LOCAL_BUILD) return;
 
                           java.util.regex.Matcher asset = java.util.regex.Pattern
                                   .compile("\\\"browser_download_url\\\"\\s*:\\s*\\\"([^\\\"]+\\.apk)\\\"")
@@ -446,6 +481,8 @@ jobs:
               "DOM storage enabled": "setDomStorageEnabled(true)" in final,
               "cookies enabled": "setAcceptCookie(true)" in final,
               "update checker present": "checkJanoubiaUpdate" in final,
+              "local build comparison present": "JAN_LOCAL_BUILD" in final,
+              "five-second header hide present": "5000L" in final and "evaluateJavascript" in final,
               "update downloader present": "DownloadManager" in final,
               "update install permission": "REQUEST_INSTALL_PACKAGES" in manifest_final,
               "no broken R.id.webview": "R.id.webview" not in final,
