@@ -263,7 +263,7 @@ jobs:
                           if (!tag.find()) return;
 
                           int remoteVersion = Integer.parseInt(tag.group(1));
-                          if (remoteVersion <= BuildConfig.VERSION_CODE) return;
+                          if (remoteVersion <= getPackageManager().getPackageInfo(getPackageName(), 0).versionCode) return;
 
                           java.util.regex.Matcher asset = java.util.regex.Pattern
                                   .compile("\\\"browser_download_url\\\"\\s*:\\s*\\\"([^\\\"]+\\.apk)\\\"")
