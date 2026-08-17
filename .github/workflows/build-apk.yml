@@ -1,4 +1,4 @@
-name: Build Signed Android APK
+name: Build Final Janoubia APK
 
 on:
   workflow_dispatch:
@@ -7,7 +7,8 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
 
 jobs:
   build:
@@ -17,55 +18,66 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract latest project
+      - name: Extract Android project
         run: |
           rm -rf appsrc
           mkdir -p appsrc
           unzip -o mawzafeen-aljanoubia-v2-final-admin-tools.zip.zip -d appsrc
 
-          echo "===== PROJECT FILES ====="
-          find appsrc -maxdepth 4 -type f | head -100
-
-      - name: Fix MainActivity and login support
+      - name: Apply final fixes and in-app updater
+        env:
+          JAN_BUILD_NUMBER: ${{ github.run_number }}
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import os
           import re
 
-          file = Path(
-              "appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java"
+          java = Path("appsrc/app/src/main/java/com/janoubia/sales/MainActivity.java")
+          manifest = Path("appsrc/app/src/main/AndroidManifest.xml")
+          gradle = Path("appsrc/app/build.gradle")
+
+          for f in (java, manifest, gradle):
+              if not f.exists():
+                  raise SystemExit(f"Missing required project file: {f}")
+
+          build_number = int(os.environ["JAN_BUILD_NUMBER"])
+          text = java.read_text(encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # 1) Disable the old 5-minute inactivity logout permanently.
+          # Manual logout inside the web app remains untouched.
+          # ------------------------------------------------------------
+          text, timeout_count = re.subn(
+              r'private\s+static\s+final\s+long\s+INACTIVITY_TIMEOUT_MS\s*=\s*[^;]+;',
+              'private static final long INACTIVITY_TIMEOUT_MS = Long.MAX_VALUE / 4;',
+              text,
+              count=1,
+          )
+          if timeout_count != 1:
+              raise SystemExit("INACTIVITY_TIMEOUT_MS was not found")
+
+          # Remove every call that schedules inactivity logout. This leaves
+          # manual logout untouched, but guarantees inactivity never logs out.
+          text = re.sub(
+              r'(?m)^([ \t]*)scheduleInactivityLogout\s*\(\s*\)\s*;\s*$',
+              r'\1// Automatic inactivity logout disabled.',
+              text,
           )
 
-          if not file.exists():
-              raise SystemExit(
-                  "ERROR: MainActivity.java not found at expected path"
-              )
-
-          text = file.read_text(encoding="utf-8")
-
-          print("===== ORIGINAL MAINACTIVITY =====")
-          print(text[:4000])
-
-          # --------------------------------------------------
-          # 1. Make MainActivity compatible with FragmentActivity
-          # --------------------------------------------------
-
+          # ------------------------------------------------------------
+          # 2) Keep WebView login/session/localStorage/cookies reliable.
+          # ------------------------------------------------------------
           text = re.sub(
-              r'public\s+class\s+MainActivity\s+extends\s+'
-              r'(?:Activity|AppCompatActivity|FragmentActivity)',
+              r'public\s+class\s+MainActivity\s+extends\s+(?:Activity|AppCompatActivity|FragmentActivity)',
               'public class MainActivity extends FragmentActivity',
               text,
-              count=1
+              count=1,
           )
 
-          package_match = re.search(
-              r'^package\s+[^;]+;\s*',
-              text,
-              flags=re.MULTILINE
-          )
-
+          package_match = re.search(r'^package\s+[^;]+;\s*', text, flags=re.MULTILINE)
           if not package_match:
-              raise SystemExit("ERROR: package declaration not found")
+              raise SystemExit("Package declaration not found")
 
           required_imports = [
               "import androidx.fragment.app.FragmentActivity;",
@@ -75,241 +87,374 @@ jobs:
               "import android.webkit.WebView;",
               "import android.webkit.WebViewClient;",
           ]
+          missing = [i for i in required_imports if i not in text]
+          if missing:
+              p = package_match.end()
+              text = text[:p] + "\n" + "\n".join(missing) + "\n" + text[p:]
 
-          missing_imports = []
-
-          for imp in required_imports:
-              if imp not in text:
-                  missing_imports.append(imp)
-
-          if missing_imports:
-              pos = package_match.end()
-              block = "\n" + "\n".join(missing_imports) + "\n"
-              text = text[:pos] + block + text[pos:]
-
-          # --------------------------------------------------
-          # 2. Remove broken code from previous attempts
-          # --------------------------------------------------
-
-          text = re.sub(
-              r'^\s*(?:android\.webkit\.)?WebView\s+webView\s*='
-              r'\s*findViewById\(R\.id\.webview\);\s*$',
-              '',
-              text,
-              flags=re.MULTILINE
-          )
-
-          text = re.sub(
-              r'\s*// JAN_LOGIN_FIX_START.*?'
-              r'// JAN_LOGIN_FIX_END\s*',
-              '\n',
-              text,
-              flags=re.DOTALL
-          )
-
-          # --------------------------------------------------
-          # 3. Find the REAL programmatically-created WebView
-          # --------------------------------------------------
-
-          real_webview_pattern = (
-              r'\bwebView\s*=\s*new\s+'
-              r'(?:android\.webkit\.)?WebView\s*'
-              r'\(\s*this\s*\)\s*;'
-          )
-
-          real_webview = re.search(
-              real_webview_pattern,
-              text
-          )
-
-          if not real_webview:
-              raise SystemExit(
-                  "ERROR: Real WebView creation not found in MainActivity"
+          # Remove old injected blocks, making this workflow safe to rerun.
+          for start, end in [
+              ("JAN_LOGIN_FIX_START", "JAN_LOGIN_FIX_END"),
+              ("JAN_FINAL_FIELDS_START", "JAN_FINAL_FIELDS_END"),
+              ("JAN_FINAL_METHODS_START", "JAN_FINAL_METHODS_END"),
+              ("JAN_FINAL_CHECK_START", "JAN_FINAL_CHECK_END"),
+              ("JAN_FINAL_RESUME_START", "JAN_FINAL_RESUME_END"),
+          ]:
+              text = re.sub(
+                  rf'\s*// {start}.*?// {end}\s*',
+                  '\n',
+                  text,
+                  flags=re.DOTALL,
               )
 
-          # --------------------------------------------------
-          # 4. Add WebView settings needed by login/session
-          # --------------------------------------------------
+          # Remove a bad lookup introduced in one of the older APK attempts.
+          text = re.sub(
+              r'^\s*(?:android\.webkit\.)?WebView\s+webView\s*=\s*findViewById\(R\.id\.webview\);\s*$',
+              '',
+              text,
+              flags=re.MULTILINE,
+          )
+
+          real_webview_pattern = (
+              r'\bwebView\s*=\s*new\s+(?:android\.webkit\.)?WebView\s*\(\s*this\s*\)\s*;'
+          )
+          if not re.search(real_webview_pattern, text):
+              raise SystemExit("Real WebView creation not found")
 
           login_fix = r'''
 
               // JAN_LOGIN_FIX_START
-
               WebSettings janSettings = webView.getSettings();
-
               janSettings.setJavaScriptEnabled(true);
               janSettings.setDomStorageEnabled(true);
               janSettings.setDatabaseEnabled(true);
-
               janSettings.setJavaScriptCanOpenWindowsAutomatically(true);
               janSettings.setSupportMultipleWindows(false);
-
               janSettings.setLoadWithOverviewMode(true);
               janSettings.setUseWideViewPort(true);
-
-              janSettings.setCacheMode(
-                  WebSettings.LOAD_DEFAULT
-              );
-
+              janSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                  janSettings.setMixedContentMode(
-                      WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                  );
+                  janSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
               }
-
-              CookieManager janCookies =
-                  CookieManager.getInstance();
-
+              CookieManager janCookies = CookieManager.getInstance();
               janCookies.setAcceptCookie(true);
-
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                  janCookies.setAcceptThirdPartyCookies(
-                      webView,
-                      true
-                  );
+                  janCookies.setAcceptThirdPartyCookies(webView, true);
               }
-
               janCookies.flush();
-
               // JAN_LOGIN_FIX_END
           '''
 
-          text, count = re.subn(
+          text, injected = re.subn(
               '(' + real_webview_pattern + ')',
               lambda m: m.group(1) + login_fix,
               text,
-              count=1
+              count=1,
           )
+          if injected != 1:
+              raise SystemExit("Could not inject WebView persistence settings")
 
-          if count != 1:
-              raise SystemExit(
-                  "ERROR: Could not inject WebView login settings"
-              )
-
-          # --------------------------------------------------
-          # 5. Make sure cookies persist after pages load
-          # --------------------------------------------------
-
-          if "onPageFinished" in text:
-              page_finished_pattern = (
-                  r'(public\s+void\s+onPageFinished\s*'
-                  r'\(\s*WebView\s+\w+\s*,\s*'
-                  r'String\s+\w+\s*\)\s*\{)'
-              )
-
-              if not re.search(
-                  r'onPageFinished[\s\S]{0,500}'
-                  r'CookieManager\.getInstance\(\)\.flush',
-                  text
-              ):
-                  text = re.sub(
-                      page_finished_pattern,
-                      r'\1\n'
-                      r'                '
-                      r'CookieManager.getInstance().flush();',
-                      text,
-                      count=1
-                  )
-
-          # --------------------------------------------------
-          # 6. Save repaired MainActivity
-          # --------------------------------------------------
-
-          text = re.sub(
-              r'\n{4,}',
-              '\n\n\n',
-              text
-          )
-
-          file.write_text(
+          # Ensure cookies are committed after page loads.
+          if "onPageFinished" in text and not re.search(
+              r'onPageFinished[\s\S]{0,600}CookieManager\.getInstance\(\)\.flush',
               text,
-              encoding="utf-8"
+          ):
+              text = re.sub(
+                  r'(public\s+void\s+onPageFinished\s*\(\s*WebView\s+\w+\s*,\s*String\s+\w+\s*\)\s*\{)',
+                  r'\1\n                CookieManager.getInstance().flush();',
+                  text,
+                  count=1,
+              )
+
+          # ------------------------------------------------------------
+          # 3) Native in-app update system.
+          # The app checks the latest GitHub Release tag (vNN), compares it
+          # with BuildConfig.VERSION_CODE, downloads the APK internally, and
+          # launches Android's installer. Android still requires user approval.
+          # ------------------------------------------------------------
+          class_match = re.search(
+              r'public\s+class\s+MainActivity\s+extends\s+FragmentActivity\s*\{',
+              text,
           )
+          if not class_match:
+              raise SystemExit("MainActivity declaration not found")
 
-          # --------------------------------------------------
-          # 7. Validate critical login requirements
-          # --------------------------------------------------
+          fields = r'''
 
+              // JAN_FINAL_FIELDS_START
+              private static final String JAN_RELEASE_API =
+                      "https://api.github.com/repos/sultanhosa794-stack/janoubia-sales-app/releases/latest";
+              private long janUpdateDownloadId = -1L;
+              private String janPendingUpdateUrl = null;
+              // JAN_FINAL_FIELDS_END
+          '''
+          p = class_match.end()
+          text = text[:p] + fields + text[p:]
+
+          check_block = r'''
+              // JAN_FINAL_CHECK_START
+              webView.postDelayed(() -> checkJanoubiaUpdate(), 1800L);
+              // JAN_FINAL_CHECK_END
+          '''
+
+          # loadAppHtml() is asynchronous in this project, so start the update
+          # checker after its call from onCreate. It does not block app loading.
+          marker = re.search(r'\bloadAppHtml\s*\(\s*\)\s*;', text)
+          if marker:
+              end = marker.end()
+              text = text[:end] + "\n" + check_block + text[end:]
+          elif 'setContentView(root);' in text:
+              text = text.replace('setContentView(root);', 'setContentView(root);\n' + check_block, 1)
+          else:
+              raise SystemExit("Safe insertion point for update check not found")
+
+          # If Android sends the user to the 'install unknown apps' permission
+          # screen, resume the same update automatically when they return.
+          resume_block = r'''
+              // JAN_FINAL_RESUME_START
+              if (janPendingUpdateUrl != null
+                      && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                      || getPackageManager().canRequestPackageInstalls())) {
+                  String pending = janPendingUpdateUrl;
+                  janPendingUpdateUrl = null;
+                  new android.os.Handler(android.os.Looper.getMainLooper())
+                          .postDelayed(() -> startJanoubiaUpdate(pending), 500L);
+              }
+              // JAN_FINAL_RESUME_END
+          '''
+          text, resume_count = re.subn(
+              r'(protected\s+void\s+onResume\s*\(\s*\)\s*\{\s*super\.onResume\s*\(\s*\)\s*;)',
+              r'\1\n' + resume_block,
+              text,
+              count=1,
+          )
+          if resume_count != 1:
+              raise SystemExit("onResume insertion point not found")
+
+          methods = r'''
+
+              // JAN_FINAL_METHODS_START
+              private void checkJanoubiaUpdate() {
+                  new Thread(() -> {
+                      java.net.HttpURLConnection connection = null;
+                      try {
+                          java.net.URL u = new java.net.URL(JAN_RELEASE_API);
+                          connection = (java.net.HttpURLConnection) u.openConnection();
+                          connection.setConnectTimeout(8000);
+                          connection.setReadTimeout(8000);
+                          connection.setRequestProperty("Accept", "application/vnd.github+json");
+                          connection.setRequestProperty("User-Agent", "Janoubia-Sales-App");
+                          if (connection.getResponseCode() != 200) return;
+
+                          java.io.BufferedReader br = new java.io.BufferedReader(
+                                  new java.io.InputStreamReader(
+                                          connection.getInputStream(),
+                                          java.nio.charset.StandardCharsets.UTF_8
+                                  )
+                          );
+                          StringBuilder body = new StringBuilder();
+                          String line;
+                          while ((line = br.readLine()) != null) body.append(line);
+                          br.close();
+
+                          java.util.regex.Matcher tag = java.util.regex.Pattern
+                                  .compile("\\\"tag_name\\\"\\s*:\\s*\\\"v(\\d+)\\\"")
+                                  .matcher(body.toString());
+                          if (!tag.find()) return;
+
+                          int remoteVersion = Integer.parseInt(tag.group(1));
+                          if (remoteVersion <= BuildConfig.VERSION_CODE) return;
+
+                          java.util.regex.Matcher asset = java.util.regex.Pattern
+                                  .compile("\\\"browser_download_url\\\"\\s*:\\s*\\\"([^\\\"]+\\.apk)\\\"")
+                                  .matcher(body.toString());
+                          if (!asset.find()) return;
+
+                          String apkUrl = asset.group(1).replace("\\/", "/");
+                          runOnUiThread(() -> showJanoubiaUpdate(remoteVersion, apkUrl));
+                      } catch (Throwable ignored) {
+                          // Update checks must never break login or app usage.
+                      } finally {
+                          if (connection != null) connection.disconnect();
+                      }
+                  }).start();
+              }
+
+              private void showJanoubiaUpdate(int version, String apkUrl) {
+                  if (isFinishing()) return;
+                  new android.app.AlertDialog.Builder(this)
+                          .setTitle("\u064a\u0648\u062c\u062f \u062a\u062d\u062f\u064a\u062b \u062c\u062f\u064a\u062f")
+                          .setMessage("\u064a\u062a\u0648\u0641\u0631 \u062a\u062d\u062f\u064a\u062b \u062c\u062f\u064a\u062f \u0644\u0645\u0628\u064a\u0639\u0627\u062a \u062c\u0646\u0648\u0628\u064a\u0629 2. \u0627\u0636\u063a\u0637 \u062a\u062d\u062f\u064a\u062b \u0644\u062a\u0646\u0632\u064a\u0644\u0647 \u0645\u0646 \u062f\u0627\u062e\u0644 \u0627\u0644\u062a\u0637\u0628\u064a\u0642.")
+                          .setCancelable(true)
+                          .setNegativeButton("\u0644\u0627\u062d\u0642\u0627\u064b", null)
+                          .setPositiveButton("\u062a\u062d\u062f\u064a\u062b", (dialog, which) -> startJanoubiaUpdate(apkUrl))
+                          .show();
+              }
+
+              private void startJanoubiaUpdate(String apkUrl) {
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                              && !getPackageManager().canRequestPackageInstalls()) {
+                          janPendingUpdateUrl = apkUrl;
+                          android.content.Intent settingsIntent = new android.content.Intent(
+                                  android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                  android.net.Uri.parse("package:" + getPackageName())
+                          );
+                          startActivity(settingsIntent);
+                          android.widget.Toast.makeText(
+                                  this,
+                                  "\u0627\u0633\u0645\u062d \u0644\u0644\u062a\u0637\u0628\u064a\u0642 \u0628\u062a\u062b\u0628\u064a\u062a \u0627\u0644\u062a\u062d\u062f\u064a\u062b\u0627\u062a. \u0633\u064a\u0643\u0645\u0644 \u0627\u0644\u062a\u0646\u0632\u064a\u0644 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b \u0639\u0646\u062f \u0627\u0644\u0631\u062c\u0648\u0639.",
+                                  android.widget.Toast.LENGTH_LONG
+                          ).show();
+                          return;
+                      }
+
+                      android.app.DownloadManager dm = (android.app.DownloadManager)
+                              getSystemService(android.content.Context.DOWNLOAD_SERVICE);
+                      if (dm == null) return;
+
+                      android.app.DownloadManager.Request request =
+                              new android.app.DownloadManager.Request(android.net.Uri.parse(apkUrl));
+                      request.setTitle("\u062a\u062d\u062f\u064a\u062b \u0645\u0628\u064a\u0639\u0627\u062a \u062c\u0646\u0648\u0628\u064a\u0629 2");
+                      request.setDescription("\u062c\u0627\u0631\u064a \u062a\u0646\u0632\u064a\u0644 \u0627\u0644\u062a\u062d\u062f\u064a\u062b...");
+                      request.setMimeType("application/vnd.android.package-archive");
+                      request.setNotificationVisibility(
+                              android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                      );
+                      request.setDestinationInExternalFilesDir(
+                              this,
+                              android.os.Environment.DIRECTORY_DOWNLOADS,
+                              "Janoubia-Sales-Update.apk"
+                      );
+                      janUpdateDownloadId = dm.enqueue(request);
+
+                      final android.content.BroadcastReceiver receiver =
+                              new android.content.BroadcastReceiver() {
+                          @Override
+                          public void onReceive(
+                                  android.content.Context context,
+                                  android.content.Intent intent
+                          ) {
+                              long id = intent.getLongExtra(
+                                      android.app.DownloadManager.EXTRA_DOWNLOAD_ID,
+                                      -1L
+                              );
+                              if (id != janUpdateDownloadId) return;
+                              try {
+                                  android.net.Uri uri = dm.getUriForDownloadedFile(id);
+                                  if (uri == null) {
+                                      android.widget.Toast.makeText(
+                                              MainActivity.this,
+                                              "\u062a\u0639\u0630\u0631 \u062a\u0646\u0632\u064a\u0644 \u0627\u0644\u062a\u062d\u062f\u064a\u062b. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.",
+                                              android.widget.Toast.LENGTH_LONG
+                                      ).show();
+                                      return;
+                                  }
+                                  android.content.Intent install = new android.content.Intent(
+                                          android.content.Intent.ACTION_VIEW
+                                  );
+                                  install.setDataAndType(
+                                          uri,
+                                          "application/vnd.android.package-archive"
+                                  );
+                                  install.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                  install.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  startActivity(install);
+                              } finally {
+                                  try {
+                                      unregisterReceiver(this);
+                                  } catch (Throwable ignored) {}
+                              }
+                          }
+                      };
+
+                      android.content.IntentFilter filter = new android.content.IntentFilter(
+                              android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE
+                      );
+                      if (Build.VERSION.SDK_INT >= 33) {
+                          registerReceiver(
+                                  receiver,
+                                  filter,
+                                  android.content.Context.RECEIVER_NOT_EXPORTED
+                          );
+                      } else {
+                          registerReceiver(receiver, filter);
+                      }
+                  } catch (Throwable t) {
+                      android.widget.Toast.makeText(
+                              this,
+                              "\u062a\u0639\u0630\u0631 \u0628\u062f\u0621 \u0627\u0644\u062a\u062d\u062f\u064a\u062b. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.",
+                              android.widget.Toast.LENGTH_LONG
+                      ).show();
+                  }
+              }
+              // JAN_FINAL_METHODS_END
+          '''
+
+          last_brace = text.rfind('}')
+          if last_brace < 0:
+              raise SystemExit("MainActivity closing brace not found")
+          text = text[:last_brace] + methods + "\n" + text[last_brace:]
+          java.write_text(text, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # 4) Required Android permission for self-update installation.
+          # ------------------------------------------------------------
+          m = manifest.read_text(encoding="utf-8")
+          if 'android.permission.REQUEST_INSTALL_PACKAGES' not in m:
+              internet = '<uses-permission android:name="android.permission.INTERNET" />'
+              if internet in m:
+                  m = m.replace(
+                      internet,
+                      internet + '\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />',
+                      1,
+                  )
+              else:
+                  m = m.replace(
+                      '<manifest',
+                      '<manifest',
+                      1,
+                  )
+                  pos = m.find('>') + 1
+                  m = m[:pos] + '\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />' + m[pos:]
+          manifest.write_text(m, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # 5) Every GitHub Actions run gets a higher version automatically.
+          # No manual version-number editing is needed for future APK updates.
+          # ------------------------------------------------------------
+          g = gradle.read_text(encoding="utf-8")
+          g, vc = re.subn(r'versionCode\s+\d+', f'versionCode {build_number}', g, count=1)
+          g, vn = re.subn(
+              r'versionName\s+["\'][^"\']+["\']',
+              f'versionName "2.{build_number}"',
+              g,
+              count=1,
+          )
+          if vc != 1 or vn != 1:
+              raise SystemExit("Could not set versionCode/versionName")
+          gradle.write_text(g, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # 6) Regression checks: fail the build instead of shipping a bad APK.
+          # ------------------------------------------------------------
+          final = java.read_text(encoding="utf-8")
+          manifest_final = manifest.read_text(encoding="utf-8")
           checks = {
-              "FragmentActivity":
-                  "extends FragmentActivity" in text,
-
-              "FragmentActivity import":
-                  "import androidx.fragment.app.FragmentActivity;" in text,
-
-              "JavaScript enabled":
-                  "setJavaScriptEnabled(true)" in text,
-
-              "DOM storage enabled":
-                  "setDomStorageEnabled(true)" in text,
-
-              "Database enabled":
-                  "setDatabaseEnabled(true)" in text,
-
-              "Cookies enabled":
-                  "setAcceptCookie(true)" in text,
-
-              "Third party cookies":
-                  "setAcceptThirdPartyCookies" in text,
-
-              "Real WebView":
-                  bool(
-                      re.search(
-                          real_webview_pattern,
-                          text
-                      )
-                  ),
-
-              "No broken R.id.webview":
-                  "R.id.webview" not in text,
+              "five-minute logout disabled": "Long.MAX_VALUE / 4" in final,
+              "JavaScript enabled": "setJavaScriptEnabled(true)" in final,
+              "DOM storage enabled": "setDomStorageEnabled(true)" in final,
+              "cookies enabled": "setAcceptCookie(true)" in final,
+              "update checker present": "checkJanoubiaUpdate" in final,
+              "update downloader present": "DownloadManager" in final,
+              "update install permission": "REQUEST_INSTALL_PACKAGES" in manifest_final,
+              "no broken R.id.webview": "R.id.webview" not in final,
           }
-
-          print("===== LOGIN VALIDATION =====")
-
-          failed = []
-
+          failed = [name for name, ok in checks.items() if not ok]
           for name, ok in checks.items():
-              print(
-                  name + ":",
-                  "OK" if ok else "FAILED"
-              )
-
-              if not ok:
-                  failed.append(name)
-
+              print(f"{name}: {'OK' if ok else 'FAILED'}")
           if failed:
-              raise SystemExit(
-                  "ERROR: Validation failed: "
-                  + ", ".join(failed)
-              )
-
-          print("===== MAINACTIVITY FIX COMPLETE =====")
-          PY
-
-      - name: Verify Android Manifest
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          manifest = Path(
-              "appsrc/app/src/main/AndroidManifest.xml"
-          )
-
-          if not manifest.exists():
-              raise SystemExit(
-                  "ERROR: AndroidManifest.xml not found"
-              )
-
-          text = manifest.read_text(
-              encoding="utf-8"
-          )
-
-          if "android.permission.INTERNET" not in text:
-              raise SystemExit(
-                  "ERROR: INTERNET permission missing"
-              )
-
-          print("AndroidManifest INTERNET permission: OK")
+              raise SystemExit("FINAL VALIDATION FAILED: " + ", ".join(failed))
           PY
 
       - name: Setup Java
@@ -332,55 +477,41 @@ jobs:
           echo "android.useAndroidX=true" > gradle.properties
           echo "android.enableJetifier=true" >> gradle.properties
 
-      - name: Restore signing key
+      - name: Restore original signing key
         run: |
-          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" \
-          | base64 -d \
-          > "$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks"
+          echo "${{ secrets.JAN_SIGNING_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/janoubia-release.jks"
+          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/janoubia-release.jks" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
 
-          echo "JAN_SIGNING_STORE=$RUNNER_TEMP/mawzafeen-aljanoubia-release.jks" \
-          >> "$GITHUB_ENV"
-
-          echo "JAN_SIGNING_STORE_PASSWORD=${{ secrets.JAN_SIGNING_STORE_PASSWORD }}" \
-          >> "$GITHUB_ENV"
-
-          echo "JAN_SIGNING_KEY_ALIAS=${{ secrets.JAN_SIGNING_KEY_ALIAS }}" \
-          >> "$GITHUB_ENV"
-
-          echo "JAN_SIGNING_KEY_PASSWORD=${{ secrets.JAN_SIGNING_KEY_PASSWORD }}" \
-          >> "$GITHUB_ENV"
-
-      - name: Compile Java first
+      - name: Compile release Java
         working-directory: appsrc
-        run: |
-          gradle :app:compileReleaseJavaWithJavac --stacktrace
+        run: gradle :app:compileReleaseJavaWithJavac --stacktrace
 
       - name: Build signed release APK
         working-directory: appsrc
-        run: |
-          gradle :app:assembleRelease --stacktrace
+        run: gradle :app:assembleRelease --stacktrace
 
-      - name: Verify APK exists
+      - name: Prepare final APK
         run: |
           APK="appsrc/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          cp "$APK" Janoubia-Sales-2.apk
+          ls -lh Janoubia-Sales-2.apk
 
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not generated"
-            exit 1
-          fi
-
-          echo "===== APK GENERATED ====="
-          ls -lh "$APK"
-
-      - name: Prepare APK
-        run: |
-          cp \
-          appsrc/app/build/outputs/apk/release/app-release.apk \
-          Mawzafeen-Aljanoubia.apk
-
-      - name: Upload signed APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Mawzafeen-Aljanoubia-APK
-          path: Mawzafeen-Aljanoubia.apk
+          name: Janoubia-Sales-2-Final
+          path: Janoubia-Sales-2.apk
           if-no-files-found: error
+
+      - name: Publish update for installed apps
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Janoubia Sales 2 - Update ${{ github.run_number }}"
+          files: Janoubia-Sales-2.apk
+          make_latest: true
+          generate_release_notes: false
