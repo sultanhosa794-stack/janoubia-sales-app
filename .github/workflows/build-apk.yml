@@ -136,7 +136,7 @@ jobs:
               janSettings.setUseWideViewPort(true);
               janSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-janSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+              janSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
               }
               CookieManager janCookies = CookieManager.getInstance();
               janCookies.setAcceptCookie(true);
