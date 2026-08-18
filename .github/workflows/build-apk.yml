@@ -136,12 +136,12 @@ jobs:
               janSettings.setUseWideViewPort(true);
               janSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                  janSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+janSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
               }
               CookieManager janCookies = CookieManager.getInstance();
               janCookies.setAcceptCookie(true);
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                  janCookies.setAcceptThirdPartyCookies(webView, true);
+                  janCookies.setAcceptThirdPartyCookies(webView, false);
               }
               janCookies.flush();
               // JAN_LOGIN_FIX_END
