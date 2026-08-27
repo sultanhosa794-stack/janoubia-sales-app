@@ -87,7 +87,9 @@ jobs:
               "import android.webkit.WebSettings;",
               "import android.webkit.WebView;",
               "import android.webkit.WebViewClient;",
-          ]
+                        "import android.Manifest;",
+              "import android.content.pm.PackageManager;",
+              "import android.location.LocationManager;", ]
           missing = [i for i in required_imports if i not in text]
           if missing:
               p = package_match.end()
@@ -144,6 +146,106 @@ jobs:
                   janCookies.setAcceptThirdPartyCookies(webView, false);
               }
               janCookies.flush();
+                            webView.addJavascriptInterface(new Object() {
+                  @android.webkit.JavascriptInterface
+                  public void requestLocation() {
+                      runOnUiThread(() -> {
+                          try {
+                              if (Build.VERSION.SDK_INT >= 23
+                                      && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                                      != PackageManager.PERMISSION_GRANTED
+                                      && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+                                      != PackageManager.PERMISSION_GRANTED) {
+
+                                  requestPermissions(
+                                          new String[]{
+                                                  Manifest.permission.ACCESS_FINE_LOCATION,
+                                                  Manifest.permission.ACCESS_COARSE_LOCATION
+                                          },
+                                          4401
+                                  );
+
+                                  webView.evaluateJavascript(
+                                          "window.__janLocError&&window.__janLocError('اسمح بصلاحية الموقع ثم اضغط مرة أخرى')",
+                                          null
+                                  );
+                                  return;
+                              }
+
+                              LocationManager lm = (LocationManager)
+                                      getSystemService(android.content.Context.LOCATION_SERVICE);
+
+                              if (lm == null) {
+                                  webView.evaluateJavascript(
+                                          "window.__janLocError&&window.__janLocError('تعذر تشغيل خدمة الموقع')",
+                                          null
+                                  );
+                                  return;
+                              }
+
+                              String provider = lm.getBestProvider(
+                                      new android.location.Criteria(),
+                                      true
+                              );
+
+                              if (provider == null) {
+                                  webView.evaluateJavascript(
+                                          "window.__janLocError&&window.__janLocError('شغّل GPS وحاول مرة أخرى')",
+                                          null
+                                  );
+                                  return;
+                              }
+
+                              final android.location.LocationListener[] holder =
+                                      new android.location.LocationListener[1];
+
+                              holder[0] = new android.location.LocationListener() {
+                                  @Override
+                                  public void onLocationChanged(android.location.Location loc) {
+                                      try {
+                                          lm.removeUpdates(holder[0]);
+                                      } catch (Throwable ignored) {}
+
+                                      String js =
+                                              "window.__janLocDone&&window.__janLocDone("
+                                              + loc.getLatitude() + ","
+                                              + loc.getLongitude() + ","
+                                              + loc.getAccuracy() + ")";
+
+                                      webView.evaluateJavascript(js, null);
+                                  }
+
+                                  @Override
+                                  public void onProviderEnabled(String provider) {}
+
+                                  @Override
+                                  public void onProviderDisabled(String provider) {}
+
+                                  @Override
+                                  public void onStatusChanged(
+                                          String provider,
+                                          int status,
+                                          android.os.Bundle extras
+                                  ) {}
+                              };
+
+                              lm.requestLocationUpdates(
+                                      provider,
+                                      0L,
+                                      0f,
+                                      holder[0],
+                                      android.os.Looper.getMainLooper()
+                              );
+
+                          } catch (Throwable e) {
+                              webView.evaluateJavascript(
+                                  "window.__janLocError&&window.__janLocError('تعذر تحديد الموقع، تأكد من تشغيل GPS')",
+                                  null
+                              );
+                          }
+                      });
+                  }
+              }, "JanoubiaNative");
               // JAN_LOGIN_FIX_END
           '''
 
@@ -577,7 +679,19 @@ jobs:
                   )
                   pos = m.find('>') + 1
                   m = m[:pos] + '\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />' + m[pos:]
-          manifest.write_text(m, encoding="utf-8")
+                    # GPS permissions for shift check-in/check-out
+          for perm in [
+              'android.permission.ACCESS_FINE_LOCATION',
+              'android.permission.ACCESS_COARSE_LOCATION',
+          ]:
+              if perm not in m:
+                  pos = m.find('>') + 1
+                  m = (
+                      m[:pos]
+                      + '\n    <uses-permission android:name="' + perm + '" />'
+                      + m[pos:]
+                  ) 
+                  manifest.write_text(m, encoding="utf-8")
 
           # ------------------------------------------------------------
           # 5) Every GitHub Actions run gets a higher version automatically.
