@@ -1,7 +1,7 @@
 # JANoubia FINAL - GPS + shifts + device binding + admin controls + updater
 name: Build Final Janoubia APK
 
-on:
+"on":
   workflow_dispatch:
   push:
     branches:
@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
   build:
